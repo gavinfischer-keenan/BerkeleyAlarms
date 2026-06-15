@@ -3,13 +3,15 @@
 # Each top-level key is an alarm type. The alarm service subscribes to
 # trigger_topic and manages the full alarm lifecycle.
 #
+# Hardware reference: BerkeleyPlatform/HARDWARE.md
+#
 # Fields:
 #   name               Human-readable alarm name shown in the UI.
 #   trigger_topic      MQTT topic pattern (# and + wildcards supported).
 #   severity           critical | warning | info  (controls UI colour / urgency)
 #   priority           time_critical | high | normal | low
-#                        time_critical → act right now (EQ, fire, CO, leak)
-#                        high          → act soon (breaker, CO2)
+#                        time_critical → act right now (EQ, fire, CO, gas leak)
+#                        high          → act soon (breaker, CO2, soil saturation)
 #                        normal        → standard alert
 #                        low           → informational / AI insight
 #   tts_template       Text for Alexa announcement.
@@ -76,13 +78,84 @@ alarms:
     trigger_topic: "home/alerts/leak/#"  # catches home/alerts/leak/{sensor_id}
     severity: "critical"
     priority: "time_critical"
-    tts_template: "Alexa Announce Leak Detected in {location}"
+    tts_template: "Alexa Announce Leak Detected at {location}"
     repeat_interval_sec: 180             # every 3 minutes
     location_field: "data.location"
     channels: [alexa, display_banner]
     auto_resolve:
       sensor_clear: true
       # Note: only auto-resolves after user Ack — a still-wet sensor won't auto-clear.
+
+  # ── GAS SENSOR ALERTS (MQ Series — outdoor weather pole) ───────────────────
+  # Each MQ sensor publishes to home/alerts/gas/{sensor_type}
+  # Critical sensors (explosive/toxic): immediate Alexa + banner
+  # Warning sensors (air quality): display only
+
+  gas_flammable:
+    name: "Flammable Gas Detected"
+    # Covers MQ-2 (LPG/smoke), MQ-4 (methane), MQ-5 (LPG/CH4), MQ-6 (butane), MQ-9 (CO/LPG)
+    trigger_topic: "home/alerts/gas/+/flammable"
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Warning. Flammable gas detected outside. Do not operate electrical switches."
+    repeat_interval_sec: 30
+    location_field: "data.location"
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 1800
+
+  gas_co_outdoor:
+    name: "Carbon Monoxide (Outdoor Pole)"
+    # MQ-7 on the weather pole — outdoor CO level
+    trigger_topic: "home/alerts/gas/+/mq7"
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Carbon Monoxide detected at the weather station. Check outdoor areas."
+    repeat_interval_sec: 60
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
+
+  gas_methane:
+    name: "Methane / Natural Gas Detected"
+    # MQ-4 specific alert
+    trigger_topic: "home/alerts/gas/+/mq4"
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Methane or natural gas detected outside. Check the gas line."
+    repeat_interval_sec: 30
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 1800
+
+  gas_hydrogen:
+    name: "Hydrogen Gas Detected"
+    # MQ-8 — H₂ leak (battery storage areas, fuel cells)
+    trigger_topic: "home/alerts/gas/+/mq8"
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Hydrogen gas detected outside."
+    repeat_interval_sec: 30
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 1800
+
+  gas_air_quality:
+    name: "Outdoor Air Quality Warning (Gas Sensor)"
+    # MQ-3 (alcohol/benzene), MQ-135 (NH3/VOC/smoke proxy)
+    trigger_topic: "home/alerts/gas/+/air-quality"
+    severity: "warning"
+    priority: "normal"
+    tts_template: "Alexa Announce Elevated chemical levels detected at the weather station."
+    repeat_interval_sec: 0               # announce once only
+    channels: [display_banner, rotating_screen]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
 
   # ── HIGH PRIORITY — ACT SOON ────────────────────────────────────────────────
 
@@ -112,6 +185,21 @@ alarms:
       sensor_clear: true
       timeout_sec: 3600
 
+  soil_saturation:
+    name: "Soil Over-Saturation"
+    # Triggered by BerkeleyEnvironmental rules when moisture > soil_wet_threshold
+    # Priority elevated for retaining wall zones (soil-zone-9) — slope stability risk
+    trigger_topic: "home/alerts/soil-saturation/+"  # home/alerts/soil-saturation/{zone_id}
+    severity: "warning"
+    priority: "high"
+    tts_template: "Alexa Announce Soil saturation alert in garden zone {location}"
+    repeat_interval_sec: 0               # once only — not urgent
+    location_field: "data.zone"
+    channels: [display_banner, rotating_screen]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
+
   # ── NORMAL PRIORITY ─────────────────────────────────────────────────────────
 
   power_anomaly:
@@ -128,10 +216,12 @@ alarms:
 
   fire_weather:
     name: "Critical Fire Weather"
-    trigger_topic: "home/alerts/fire-weather/+"  # home/alerts/fire-weather/{sensor_id}
+    # Triggered by BerkeleyEnvironmental when Diablo wind conditions detected:
+    # NE quadrant wind ≥ 20mph AND humidity < 20%
+    trigger_topic: "home/alerts/fire-weather/+"  # home/alerts/fire-weather/{station_id}
     severity: "critical"
     priority: "time_critical"
-    tts_template: "Alexa Announce Critical Fire Weather Conditions. Pre-hydration initiated."
+    tts_template: "Alexa Announce Critical Fire Weather Conditions. Diablo wind detected."
     repeat_interval_sec: 300             # every 5 minutes while conditions persist
     channels: [alexa, display_banner, rotating_screen]
     auto_resolve:
@@ -139,7 +229,7 @@ alarms:
 
   air_quality:
     name: "Air Quality Warning"
-    trigger_topic: "home/alerts/air-quality/+"   # home/alerts/air-quality/{sensor_id}
+    trigger_topic: "home/alerts/air-quality/+"   # home/alerts/air-quality/{station_id}
     severity: "warning"
     priority: "high"
     tts_template: "Alexa Announce Poor air quality detected. Check windows and ventilation."
@@ -149,22 +239,33 @@ alarms:
       sensor_clear: true
       timeout_sec: 3600
 
-  soil_saturation:
-    name: "Soil Over-Saturation"
-    trigger_topic: "home/alerts/soil-saturation/+"  # home/alerts/soil-saturation/{sensor_id}
-    severity: "info"
+  uv_extreme:
+    name: "Extreme UV Warning"
+    # Triggered when UV index ≥ 8 (Very High or Extreme)
+    trigger_topic: "home/alerts/uv/+"
+    severity: "warning"
     priority: "normal"
-    tts_template: "Alexa Announce Soil saturation alert in garden zone {location}"
-    repeat_interval_sec: 0               # once only — not urgent
-    location_field: "data.zone"
+    tts_template: "Alexa Announce UV index is very high. Limit outdoor exposure."
+    repeat_interval_sec: 0
     channels: [rotating_screen]
     auto_resolve:
-      sensor_clear: true
+      timeout_sec: 3600
+
+  ozone_high:
+    name: "High Ozone Level"
+    # Triggered when ozone ≥ 71 ppb (EPA Moderate threshold)
+    trigger_topic: "home/alerts/ozone/+"
+    severity: "warning"
+    priority: "normal"
+    tts_template: "Alexa Announce Ozone levels are elevated. Limit outdoor exertion."
+    repeat_interval_sec: 0
+    channels: [rotating_screen]
+    auto_resolve:
       timeout_sec: 3600
 
   heavy_rain:
     name: "Heavy Rain Event"
-    trigger_topic: "home/alerts/heavy-rain/+"    # home/alerts/heavy-rain/{sensor_id}
+    trigger_topic: "home/alerts/heavy-rain/+"    # home/alerts/heavy-rain/{station_id}
     severity: "info"
     priority: "normal"
     tts_template: "Alexa Announce Heavy rain detected at the weather station."
@@ -173,19 +274,33 @@ alarms:
     auto_resolve:
       timeout_sec: 1800
 
+  # ── OCCUPANCY STATE EVENTS ──────────────────────────────────────────────────
+  # Not strict alarms — state transitions for compute orchestration.
+  # Published to home/events/occupancy-state by Home Assistant.
+
+  occupancy_departed:
+    name: "House Departed"
+    # Triggered by voice command "we are leaving" + camera verification
+    trigger_topic: "home/events/occupancy-state"
+    severity: "info"
+    priority: "low"
+    tts_template: ""     # no announcement — departure already known
+    repeat_interval_sec: 0
+    channels: [rotating_screen]
+    auto_resolve:
+      timeout_sec: 86400   # auto-clear after 24 hours if no return event
+
   # ── LOW PRIORITY — INFORMATIONAL ─────────────────────────────────────────────
   # AI-insight alarms route only to rotating screen and future command panel.
-  # No Alexa, no banner. Template below shows the pattern to follow.
-  #
-  # irrigation_insight:
-  #   name: "Irrigation Insight"
-  #   trigger_topic: "home/alerts/insight/irrigation"
+  # No Alexa, no banner.
+
+  # ai_observation:
+  #   name: "AI Observation"
+  #   trigger_topic: "home/alerts/insight/+"
   #   severity: "info"
   #   priority: "low"
-  #   tts_template: "{location}"          # unused — alexa not in channels
+  #   tts_template: ""            # alexa not in channels
   #   repeat_interval_sec: 0
   #   channels: [rotating_screen]
   #   auto_resolve:
   #     timeout_sec: 86400
-
-
