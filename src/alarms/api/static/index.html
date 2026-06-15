@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Berkeley Alarm Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base:      #0a0c10;
+      --bg-surface:   #10131a;
+      --bg-card:      #151921;
+      --bg-card-alt:  #1a1f2b;
+      --border:       #252c3b;
+      --border-light: #2e3748;
+
+      --critical-hue: 0;
+      --warning-hue:  34;
+      --info-hue:     210;
+
+      --critical:     hsl(var(--critical-hue), 90%, 55%);
+      --critical-dim: hsl(var(--critical-hue), 70%, 20%);
+      --critical-glow:hsl(var(--critical-hue), 90%, 50%);
+      --warning:      hsl(var(--warning-hue), 95%, 55%);
+      --warning-dim:  hsl(var(--warning-hue), 70%, 20%);
+      --info:         hsl(var(--info-hue), 75%, 55%);
+      --info-dim:     hsl(var(--info-hue), 50%, 20%);
+      --acked:        #4a5568;
+
+      --text-primary:   #e8eaf0;
+      --text-secondary: #8892a4;
+      --text-muted:     #4a5568;
+
+      --font-body: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    .header {
+      background: linear-gradient(135deg, #0d1117 0%, #151921 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, #e53e3e, #fc8181);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .header-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .header-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .conn-badge {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-secondary);
+      background: var(--bg-card);
+      padding: 6px 12px; border-radius: 20px;
+      border: 1px solid var(--border);
+    }
+    .conn-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #68d391;
+      box-shadow: 0 0 6px #68d391;
+      animation: pulse-green 2s infinite;
+    }
+    .conn-dot.disconnected { background: #fc8181; box-shadow: 0 0 6px #fc8181; animation: none; }
+    .alarm-count-badge {
+      background: var(--critical-dim);
+      border: 1px solid var(--critical);
+      color: var(--critical);
+      font-size: 12px; font-weight: 600;
+      padding: 4px 10px; border-radius: 20px;
+      display: none;
+    }
+    .alarm-count-badge.visible { display: flex; align-items: center; gap: 6px; }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+    /* ── Section headings ────────────────────────────────────────── */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-secondary);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .badge {
+      background: var(--bg-card-alt); border: 1px solid var(--border-light);
+      color: var(--text-secondary);
+      font-size: 11px; font-weight: 600;
+      padding: 2px 8px; border-radius: 10px;
+      min-width: 22px; text-align: center;
+    }
+
+    /* ── Empty state ─────────────────────────────────────────────── */
+    .empty-state {
+      text-align: center;
+      padding: 64px 32px;
+      color: var(--text-muted);
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+    }
+    .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+    .empty-title { font-size: 16px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary); }
+    .empty-desc  { font-size: 13px; }
+
+    /* ── Alarm Card ──────────────────────────────────────────────── */
+    .alarm-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 12px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.15s ease, border-color 0.2s;
+      animation: card-enter 0.3s ease;
+    }
+    .alarm-card:hover { transform: translateY(-1px); }
+
+    .alarm-card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 4px;
+    }
+    .alarm-card.critical { border-color: var(--critical-dim); }
+    .alarm-card.critical::before { background: var(--critical); }
+    .alarm-card.critical.active-pulse { animation: card-enter 0.3s ease, card-pulse 2s ease-in-out infinite; }
+    .alarm-card.warning { border-color: var(--warning-dim); }
+    .alarm-card.warning::before { background: var(--warning); }
+    .alarm-card.info { border-color: var(--info-dim); }
+    .alarm-card.info::before { background: var(--info); }
+    .alarm-card.acked { opacity: 0.6; }
+    .alarm-card.acked::before { background: var(--acked); }
+
+    .card-top {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; margin-bottom: 14px;
+    }
+    .card-meta { flex: 1; }
+    .card-name {
+      font-size: 15px; font-weight: 600; margin-bottom: 4px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .severity-pill {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 2px 8px; border-radius: 10px;
+    }
+    .severity-pill.critical { background: var(--critical-dim); color: var(--critical); }
+    .severity-pill.warning  { background: var(--warning-dim);  color: var(--warning);  }
+    .severity-pill.info     { background: var(--info-dim);     color: var(--info);     }
+    .severity-pill.acked    { background: #1a2030;             color: var(--acked);    }
+
+    .card-tts {
+      font-family: var(--font-mono);
+      font-size: 12px; color: var(--text-secondary);
+      background: var(--bg-base);
+      padding: 8px 12px; border-radius: 6px;
+      border: 1px solid var(--border);
+      margin-bottom: 14px;
+      white-space: pre-wrap;
+    }
+
+    .card-stats {
+      display: flex; gap: 16px; margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .stat { display: flex; flex-direction: column; gap: 2px; }
+    .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+    .stat-value { font-size: 13px; font-weight: 500; font-family: var(--font-mono); }
+
+    .card-actions { display: flex; gap: 8px; }
+    .btn {
+      padding: 7px 16px; border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 600;
+      border: none; cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      font-family: var(--font-body);
+    }
+    .btn:hover  { opacity: 0.85; }
+    .btn:active { transform: scale(0.97); }
+    .btn-ack {
+      background: hsl(34, 70%, 20%); color: hsl(34, 95%, 70%);
+      border: 1px solid hsl(34, 70%, 35%);
+    }
+    .btn-resolve {
+      background: hsl(210, 50%, 15%); color: hsl(210, 75%, 70%);
+      border: 1px solid hsl(210, 50%, 30%);
+    }
+    .btn-disabled {
+      background: var(--bg-card-alt); color: var(--text-muted);
+      border: 1px solid var(--border); cursor: default;
+    }
+
+    /* ── History Panel ───────────────────────────────────────────── */
+    .history-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .history-item {
+      display: flex; gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      flex-shrink: 0; margin-top: 4px;
+    }
+    .history-dot.critical { background: var(--critical); }
+    .history-dot.warning  { background: var(--warning); }
+    .history-dot.info     { background: var(--info); }
+    .history-name { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+    .history-time { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+    .history-reason { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+
+    /* ── Animations ──────────────────────────────────────────────── */
+    @keyframes pulse-green {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+    @keyframes card-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 transparent; }
+      50%       { box-shadow: 0 0 0 4px var(--critical-dim); }
+    }
+    @keyframes card-enter {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Notification toast ──────────────────────────────────────── */
+    .toast-container {
+      position: fixed; bottom: 24px; right: 24px;
+      display: flex; flex-direction: column; gap: 8px; z-index: 999;
+    }
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      font-size: 13px;
+      display: flex; align-items: center; gap: 10px;
+      animation: toast-in 0.25s ease;
+      max-width: 320px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo-icon">🚨</div>
+    <div>
+      <div class="header-title">Berkeley Alarm Console</div>
+      <div class="header-subtitle">Mosswood Operational Technology</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="alarm-count-badge" id="activeCountBadge">
+      <span>●</span>
+      <span id="activeBadgeText">0 Active</span>
+    </div>
+    <div class="conn-badge">
+      <div class="conn-dot disconnected" id="connDot"></div>
+      <span id="connLabel">Connecting…</span>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="grid">
+
+    <!-- ── Active Alarms ─────────────────────────────────────────── -->
+    <div>
+      <div class="section-header">
+        <div class="section-title">
+          Active Alarms
+          <span class="badge" id="activeCount">0</span>
+        </div>
+      </div>
+      <div id="activeAlarms">
+        <div class="empty-state">
+          <div class="empty-icon">✅</div>
+          <div class="empty-title">All Clear</div>
+          <div class="empty-desc">No active alarms. All systems nominal.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── History ───────────────────────────────────────────────── -->
+    <div>
+      <div class="section-header">
+        <div class="section-title">
+          Recent History
+          <span class="badge" id="historyCount">0</span>
+        </div>
+      </div>
+      <div class="history-panel">
+        <div id="historyList" style="color: var(--text-muted); font-size:13px; text-align:center; padding:20px 0;">
+          Loading history…
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+const API_BASE = `${location.origin}`;
+const WS_URL  = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/alarms`;
+
+let ws = null;
+let activeAlarms = [];
+let reconnectTimer = null;
+
+// ── WebSocket connection ─────────────────────────────────────────────────────
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    setConnected(true);
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.event === 'initial_state' || msg.event === 'state_update') {
+      activeAlarms = msg.alarms || [];
+      renderActive();
+    }
+  };
+
+  ws.onclose = () => {
+    setConnected(false);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => ws.close();
+
+  // Keepalive ping
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 25000);
+}
+
+function setConnected(ok) {
+  document.getElementById('connDot').className = `conn-dot ${ok ? '' : 'disconnected'}`;
+  document.getElementById('connLabel').textContent = ok ? 'Connected' : 'Reconnecting…';
+}
+
+// ── Render active alarms ─────────────────────────────────────────────────────
+
+function renderActive() {
+  const container = document.getElementById('activeAlarms');
+  const countEl   = document.getElementById('activeCount');
+  const badgeEl   = document.getElementById('activeCountBadge');
+  const badgeText = document.getElementById('activeBadgeText');
+
+  countEl.textContent = activeAlarms.length;
+
+  const critical = activeAlarms.filter(a => a.severity === 'critical' && a.state === 'active').length;
+  if (critical > 0) {
+    badgeEl.classList.add('visible');
+    badgeText.textContent = `${critical} Critical`;
+    document.title = `🚨 ${critical} ALARM${critical > 1 ? 'S' : ''} — Berkeley`;
+  } else {
+    badgeEl.classList.remove('visible');
+    document.title = 'Berkeley Alarm Console';
+  }
+
+  if (activeAlarms.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">✅</div>
+        <div class="empty-title">All Clear</div>
+        <div class="empty-desc">No active alarms. All systems nominal.</div>
+      </div>`;
+    return;
+  }
+
+  // Sort: critical first, then by triggered_at
+  const sorted = [...activeAlarms].sort((a, b) => {
+    const sev = {critical:0, warning:1, info:2};
+    if (sev[a.severity] !== sev[b.severity]) return sev[a.severity] - sev[b.severity];
+    return new Date(b.triggered_at) - new Date(a.triggered_at);
+  });
+
+  container.innerHTML = sorted.map(alarm => alarmCard(alarm)).join('');
+}
+
+function alarmCard(alarm) {
+  const isActive = alarm.state === 'active';
+  const isAcked  = alarm.state === 'acked';
+  const sev = alarm.severity;
+  const pillClass = isAcked ? 'acked' : sev;
+  const pillLabel = isAcked ? 'ACKED' : sev.toUpperCase();
+  const pulseClass = isActive && sev === 'critical' ? 'active-pulse' : '';
+
+  const triggeredAgo = timeAgo(alarm.triggered_at);
+  const lastAnnounced = alarm.last_announced_at ? timeAgo(alarm.last_announced_at) : '—';
+
+  const ackBtn = isActive
+    ? `<button class="btn btn-ack" onclick="ackAlarm('${alarm.alarm_id}')">Acknowledge</button>`
+    : `<button class="btn btn-disabled" disabled>Acknowledged</button>`;
+
+  const location = alarm.location ? `<div class="stat"><div class="stat-label">Location</div><div class="stat-value">${alarm.location}</div></div>` : '';
+
+  return `
+  <div class="alarm-card ${sev} ${pulseClass} ${isAcked ? 'acked' : ''}" id="card-${alarm.alarm_id}">
+    <div class="card-top">
+      <div class="card-meta">
+        <div class="card-name">
+          ${alarmIcon(sev)} ${alarm.name}
+          <span class="severity-pill ${pillClass}">${pillLabel}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted);">ID: ${alarm.alarm_id}</div>
+      </div>
+    </div>
+
+    <div class="card-tts">${alarm.tts_text}</div>
+
+    <div class="card-stats">
+      <div class="stat">
+        <div class="stat-label">Triggered</div>
+        <div class="stat-value">${triggeredAgo}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Repeat #</div>
+        <div class="stat-value">${alarm.repeat_count}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Last Announced</div>
+        <div class="stat-value">${lastAnnounced}</div>
+      </div>
+      ${location}
+    </div>
+
+    <div class="card-actions">
+      ${ackBtn}
+      <button class="btn btn-resolve" onclick="resolveAlarm('${alarm.alarm_id}')">Resolve</button>
+    </div>
+  </div>`;
+}
+
+function alarmIcon(sev) {
+  if (sev === 'critical') return '🔴';
+  if (sev === 'warning')  return '🟠';
+  return '🔵';
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+
+async function ackAlarm(id) {
+  try {
+    const r = await fetch(`${API_BASE}/alarms/${id}/ack`, { method: 'POST' });
+    if (r.ok) showToast('✅ Alarm acknowledged — Alexa will stop repeating', 'info');
+    else showToast('Failed to acknowledge alarm', 'error');
+  } catch { showToast('Network error', 'error'); }
+}
+
+async function resolveAlarm(id) {
+  try {
+    const r = await fetch(`${API_BASE}/alarms/${id}/resolve`, { method: 'POST' });
+    if (r.ok) {
+      showToast('✅ Alarm resolved', 'info');
+      loadHistory();
+    } else showToast('Failed to resolve alarm', 'error');
+  } catch { showToast('Network error', 'error'); }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+async function loadHistory() {
+  try {
+    const r = await fetch(`${API_BASE}/alarms/history?limit=20`);
+    const data = await r.json();
+    document.getElementById('historyCount').textContent = data.count;
+    renderHistory(data.history);
+  } catch { /* ignore */ }
+}
+
+function renderHistory(items) {
+  const el = document.getElementById('historyList');
+  if (!items || items.length === 0) {
+    el.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px 0;">No history yet</div>';
+    return;
+  }
+  el.innerHTML = items.map(h => `
+    <div class="history-item">
+      <div class="history-dot ${h.severity}"></div>
+      <div>
+        <div class="history-name">${h.name}</div>
+        ${h.location ? `<div class="history-time">📍 ${h.location}</div>` : ''}
+        <div class="history-time">${formatDate(h.resolved_at)}</div>
+        <div class="history-reason">${h.resolve_reason || '—'}</div>
+      </div>
+    </div>`).join('');
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60)   return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  return `${Math.floor(diff/3600)}h ago`;
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = `<span>${msg}</span>`;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+
+connect();
+loadHistory();
+// Refresh history every 30s and re-render time-ago strings
+setInterval(() => { renderActive(); loadHistory(); }, 30000);
+</script>
+</body>
+</html>

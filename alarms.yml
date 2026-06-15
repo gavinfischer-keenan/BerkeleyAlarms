@@ -1,0 +1,45 @@
+# Berkeley Alarm Definitions
+# ──────────────────────────────────────────────────────────────────────────────
+# Each top-level key is an alarm type. The alarm service subscribes to
+# trigger_topic (supports MQTT wildcards) and manages the full alarm lifecycle:
+# trigger → announce → repeat → ack/resolve.
+#
+# Fields:
+#   name               Human-readable alarm name shown in the UI.
+#   trigger_topic      MQTT topic pattern (# and + wildcards supported).
+#   severity           critical | warning | info  (controls UI colour / urgency)
+#   tts_template       Text published to home/commands/alexa-say.
+#                      Use {location} to interpolate location_field from payload.
+#   repeat_interval_sec  Seconds between repeated Alexa announcements while ACTIVE.
+#                        Set to 0 to disable repeating.
+#   location_field     Dotted path into the MQTT payload dict to extract location,
+#                      e.g. "data.location" → payload["data"]["location"].
+#   auto_resolve:
+#     topic            If set, resolves when a message arrives on this topic.
+#     timeout_sec      If set, auto-resolves after this many seconds.
+#     sensor_clear     If true, resolves when payload contains wet:false / occupied:false.
+# ──────────────────────────────────────────────────────────────────────────────
+
+alarms:
+
+  earthquake:
+    name: "Earthquake Warning"
+    trigger_topic: "home/alerts/earthquake"
+    severity: "critical"
+    tts_template: "Alexa Announce Earthquake Imminent"
+    repeat_interval_sec: 8
+    auto_resolve:
+      topic: "home/events/earthquake"    # confirmed event = shaking arrived, stop warning
+      timeout_sec: 300                   # 5 min failsafe if event topic never fires
+
+  leak:
+    name: "Leak Detected"
+    trigger_topic: "home/alerts/leak/#"  # catches home/alerts/leak/{sensor_id}
+    severity: "critical"
+    tts_template: "Alexa Announce Leak Detected in {location}"
+    repeat_interval_sec: 180             # repeat every 3 minutes
+    location_field: "data.location"
+    auto_resolve:
+      sensor_clear: true                 # resolves when sensor reports wet: false
+      # Note: also requires manual Ack before auto-resolve takes effect,
+      # so a still-wet sensor can't be silently cleared without user seeing it.
