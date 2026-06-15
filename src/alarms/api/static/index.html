@@ -236,6 +236,24 @@
       background: var(--bg-card-alt); color: var(--text-muted);
       border: 1px solid var(--border); cursor: default;
     }
+    .priority-pill {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 2px 6px; border-radius: 6px;
+    }
+    .priority-pill.time_critical { background: hsl(0,90%,18%); color: hsl(0,90%,70%); border: 1px solid hsl(0,70%,35%); }
+    .priority-pill.high           { background: hsl(34,80%,18%); color: hsl(34,95%,70%); border: 1px solid hsl(34,70%,35%); }
+    .priority-pill.normal         { background: hsl(210,50%,18%); color: hsl(210,75%,70%); border: 1px solid hsl(210,50%,35%); }
+    .priority-pill.low            { background: #1a2030; color: var(--acked); border: 1px solid var(--border); }
+
+    .channels-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+    .channel-tag {
+      font-size: 10px; font-weight: 500;
+      padding: 2px 7px; border-radius: 8px;
+      background: var(--bg-base); border: 1px solid var(--border-light);
+      color: var(--text-muted);
+    }
+    .channel-tag.active-channel { color: var(--text-secondary); border-color: var(--border-light); }
+
 
     /* ── History Panel ───────────────────────────────────────────── */
     .history-panel {
@@ -447,6 +465,7 @@ function alarmCard(alarm) {
   const sev = alarm.severity;
   const pillClass = isAcked ? 'acked' : sev;
   const pillLabel = isAcked ? 'ACKED' : sev.toUpperCase();
+  const priorityLabel = (alarm.priority || 'normal').replace('_', ' ').toUpperCase();
   const pulseClass = isActive && sev === 'critical' ? 'active-pulse' : '';
 
   const triggeredAgo = timeAgo(alarm.triggered_at);
@@ -458,19 +477,26 @@ function alarmCard(alarm) {
 
   const location = alarm.location ? `<div class="stat"><div class="stat-label">Location</div><div class="stat-value">${alarm.location}</div></div>` : '';
 
+  const channels = (alarm.channels || []).map(ch =>
+    `<span class="channel-tag active-channel">${channelIcon(ch)} ${ch.replace('_', ' ')}</span>`
+  ).join('');
+
   return `
   <div class="alarm-card ${sev} ${pulseClass} ${isAcked ? 'acked' : ''}" id="card-${alarm.alarm_id}">
     <div class="card-top">
       <div class="card-meta">
         <div class="card-name">
-          ${alarmIcon(sev)} ${alarm.name}
+          ${alarmIcon(alarm.definition_key, sev)} ${alarm.name}
           <span class="severity-pill ${pillClass}">${pillLabel}</span>
+          <span class="priority-pill ${alarm.priority || 'normal'}">${priorityLabel}</span>
         </div>
-        <div style="font-size:12px; color:var(--text-muted);">ID: ${alarm.alarm_id}</div>
+        <div style="font-size:12px; color:var(--text-muted);">ID: ${alarm.alarm_id} &nbsp;·&nbsp; ${alarm.source_topic || ''}</div>
       </div>
     </div>
 
     <div class="card-tts">${alarm.tts_text}</div>
+
+    ${channels ? `<div class="channels-row">${channels}</div>` : ''}
 
     <div class="card-stats">
       <div class="stat">
@@ -495,10 +521,21 @@ function alarmCard(alarm) {
   </div>`;
 }
 
-function alarmIcon(sev) {
+function alarmIcon(key, sev) {
+  const icons = {
+    earthquake: '🌍', smoke: '🔥', carbon_monoxide: '☣️',
+    leak: '💧', co2_high: '🌫️', breaker_trip: '⚡',
+    power_anomaly: '⚠️',
+  };
+  if (icons[key]) return icons[key];
   if (sev === 'critical') return '🔴';
   if (sev === 'warning')  return '🟠';
   return '🔵';
+}
+
+function channelIcon(ch) {
+  const m = { alexa:'🔊', display_banner:'📺', rotating_screen:'🖥️', push:'📱', command_panel:'🎛️' };
+  return m[ch] || '📡';
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────

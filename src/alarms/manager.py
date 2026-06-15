@@ -8,6 +8,7 @@ AlarmManager is the heart of the service. It:
   - Handles auto-resolve (topic-based and timeout-based)
   - Exposes ack() and resolve() for the REST API
   - Notifies registered listeners (WebSocket broadcaster) on state change
+  - Routes all output through the ChannelDispatcher
 """
 from __future__ import annotations
 
@@ -24,9 +25,11 @@ import yaml
 from alarms.models import (
     ActiveAlarm,
     AlarmDefinition,
+    AlarmPriority,
     AlarmSeverity,
     AlarmState,
     AutoResolveConfig,
+    NotificationChannel,
 )
 from alarms.store import AlarmStore
 
@@ -49,7 +52,6 @@ def _deep_get(data: dict, dotted_path: str) -> str:
 
 def _topic_matches(pattern: str, topic: str) -> bool:
     """Check if an MQTT topic string matches a pattern (with # and + wildcards)."""
-    # Convert MQTT wildcards to regex
     regex = re.escape(pattern).replace(r"\#", ".*").replace(r"\+", "[^/]+")
     return bool(re.fullmatch(regex, topic))
 
@@ -61,19 +63,15 @@ class AlarmManager:
         self,
         config_path: Path,
         store: AlarmStore,
-        alexa_handler,
-        display_handler,
+        dispatcher,  # ChannelDispatcher
     ) -> None:
         self._definitions: dict[str, AlarmDefinition] = {}
         self._active: dict[str, ActiveAlarm] = {}   # alarm_id → ActiveAlarm
-        # Also track: one active alarm per definition_key (dedup)
-        # If an earthquake alarm is already ACTIVE, retrigger refreshes payload but
-        # does not create a second alarm.
+        # One active alarm per definition_key (dedup)
         self._active_by_key: dict[str, str] = {}    # definition_key → alarm_id
 
         self._store = store
-        self._alexa = alexa_handler
-        self._display = display_handler
+        self._dispatcher = dispatcher
         self._listeners: list[StateListener] = []
         self._scheduler_task: asyncio.Task | None = None
 
@@ -91,13 +89,32 @@ class AlarmManager:
                 timeout_sec=ar_raw.get("timeout_sec"),
                 sensor_clear=ar_raw.get("sensor_clear", False),
             )
+            # Parse channels list (default varies by priority)
+            raw_channels = cfg.get("channels", [])
+            channels = []
+            for ch in raw_channels:
+                try:
+                    channels.append(NotificationChannel(ch))
+                except ValueError:
+                    log.warning("alarm_manager.unknown_channel", channel=ch, key=key)
+
+            # Default channels if not specified
+            if not channels:
+                priority = cfg.get("priority", "normal")
+                if priority in ("time_critical", "high"):
+                    channels = [NotificationChannel.ALEXA, NotificationChannel.DISPLAY_BANNER]
+                else:
+                    channels = [NotificationChannel.DISPLAY_BANNER]
+
             self._definitions[key] = AlarmDefinition(
                 key=key,
                 name=cfg["name"],
                 trigger_topic=cfg["trigger_topic"],
                 severity=AlarmSeverity(cfg.get("severity", "warning")),
+                priority=AlarmPriority(cfg.get("priority", "normal")),
                 tts_template=cfg["tts_template"],
                 repeat_interval_sec=cfg.get("repeat_interval_sec", 0),
+                channels=channels,
                 location_field=cfg.get("location_field"),
                 auto_resolve=ar,
             )
@@ -106,7 +123,6 @@ class AlarmManager:
     # ── lifecycle ───────────────────────────────────────────────────────
 
     def add_listener(self, listener: StateListener) -> None:
-        """Register a callback invoked whenever active alarm state changes."""
         self._listeners.append(listener)
 
     def _notify(self) -> None:
@@ -118,12 +134,10 @@ class AlarmManager:
                 log.exception("alarm_manager.listener_error")
 
     async def start(self) -> None:
-        """Start the repeat-announcement scheduler loop."""
         self._scheduler_task = asyncio.create_task(self._scheduler_loop(), name="alarm-scheduler")
         log.info("alarm_manager.started")
 
     async def stop(self) -> None:
-        """Stop the scheduler and resolve all active alarms."""
         if self._scheduler_task:
             self._scheduler_task.cancel()
             try:
@@ -135,12 +149,7 @@ class AlarmManager:
     # ── public API ──────────────────────────────────────────────────────
 
     def trigger(self, definition_key: str, payload: dict[str, Any], source_topic: str) -> None:
-        """Called when an MQTT alert arrives for the given definition key.
-
-        If no alarm of this type is currently ACTIVE/ACKED, creates one.
-        If one already exists and is ACTIVE, refreshes its payload and
-        fires an immediate re-announcement (e.g. stronger EQ reading).
-        """
+        """Called when an MQTT alert arrives for the given definition key."""
         defn = self._definitions.get(definition_key)
         if not defn:
             log.warning("alarm_manager.unknown_definition", key=definition_key)
@@ -161,18 +170,11 @@ class AlarmManager:
         if existing_id and existing_id in self._active:
             existing = self._active[existing_id]
             if existing.state in (AlarmState.ACTIVE, AlarmState.ACKED):
-                # Refresh payload (may have updated magnitude etc.) — do NOT re-announce
-                # for ACKED alarms (user silenced it). DO re-announce for ACTIVE ones.
                 existing.payload = payload
                 existing.location = location
                 existing.tts_text = tts_text
                 if existing.state == AlarmState.ACTIVE:
-                    log.info(
-                        "alarm_manager.retriggered",
-                        key=definition_key,
-                        alarm_id=existing_id,
-                    )
-                    # Re-announce immediately with updated data
+                    log.info("alarm_manager.retriggered", key=definition_key)
                     self._announce(existing)
                 return
 
@@ -182,8 +184,10 @@ class AlarmManager:
             definition_key=definition_key,
             state=AlarmState.ACTIVE,
             severity=defn.severity,
+            priority=defn.priority,
             name=defn.name,
             tts_text=tts_text,
+            channels=list(defn.channels),
             triggered_at=ActiveAlarm.now(),
             last_announced_at=None,
             repeat_count=0,
@@ -199,20 +203,19 @@ class AlarmManager:
             alarm_id=alarm.alarm_id,
             key=definition_key,
             severity=defn.severity.value,
+            priority=defn.priority.value,
             location=location,
+            channels=[c.value for c in defn.channels],
         )
 
         # Fire first announcement immediately
         self._announce(alarm)
-        self._display.raise_banner(alarm)
+        self._dispatcher.raise_banner(alarm)
         self._notify()
 
     def ack(self, alarm_id: str) -> bool:
-        """User acknowledges alarm — stops Alexa repeat but keeps UI badge."""
         alarm = self._active.get(alarm_id)
-        if not alarm:
-            return False
-        if alarm.state != AlarmState.ACTIVE:
+        if not alarm or alarm.state != AlarmState.ACTIVE:
             return False
         alarm.state = AlarmState.ACKED
         alarm.acked_at = ActiveAlarm.now()
@@ -221,7 +224,6 @@ class AlarmManager:
         return True
 
     def resolve(self, alarm_id: str, reason: str = "manual") -> bool:
-        """Resolve an alarm — clears it from active state, archives to history."""
         alarm = self._active.get(alarm_id)
         if not alarm:
             return False
@@ -229,7 +231,7 @@ class AlarmManager:
         alarm.resolved_at = ActiveAlarm.now()
         alarm.resolve_reason = reason
 
-        self._display.clear_banner(alarm)
+        self._dispatcher.clear_banner(alarm)
         self._store.archive(alarm)
 
         del self._active[alarm_id]
@@ -264,20 +266,24 @@ class AlarmManager:
                     self.resolve(alarm_id, reason=f"auto:{defn.auto_resolve.topic}")
                 return
 
-        # Check sensor_clear: e.g. home/alerts/leak/sensor-01 with wet:false
+        # Check sensor_clear
         for key, defn in self._definitions.items():
             if defn.auto_resolve.sensor_clear and _topic_matches(defn.trigger_topic, topic):
-                # If wet is now False (sensor cleared), resolve after user has acked
-                wet = _deep_get(payload, "data.wet")
-                occupied = _deep_get(payload, "data.occupied")
-                cleared = (wet == "False" or wet is False) or (
-                    occupied == "False" or occupied is False
+                # Check for sensor-cleared indicators
+                active_val = _deep_get(payload, "data.active")
+                wet_val = _deep_get(payload, "data.wet")
+                occupied_val = _deep_get(payload, "data.occupied")
+
+                cleared = (
+                    active_val in ("False", "false", "0")
+                    or wet_val in ("False", "false", "0")
+                    or occupied_val in ("False", "false", "0")
                 )
                 if cleared:
                     alarm_id = self._active_by_key.get(key)
                     if alarm_id:
                         alarm = self._active.get(alarm_id)
-                        # Only auto-resolve if user has already acknowledged
+                        # Only auto-resolve after user Ack
                         if alarm and alarm.state == AlarmState.ACKED:
                             self.resolve(alarm_id, reason="sensor_clear")
                 return
@@ -285,8 +291,8 @@ class AlarmManager:
     # ── internals ───────────────────────────────────────────────────────
 
     def _announce(self, alarm: ActiveAlarm) -> None:
-        """Fire an Alexa TTS announcement for the alarm."""
-        self._alexa.announce(alarm)
+        """Fire an announcement across the alarm's notification channels."""
+        self._dispatcher.announce(alarm)
         alarm.last_announced_at = ActiveAlarm.now()
         alarm.repeat_count += 1
 
@@ -314,7 +320,7 @@ class AlarmManager:
                         self.resolve(alarm.alarm_id, reason="timeout")
                         continue
 
-                # ── repeat announcement (ACTIVE only — not ACKED) ───────
+                # ── repeat announcement (ACTIVE only) ───────────────────
                 if alarm.state != AlarmState.ACTIVE:
                     continue
                 if defn.repeat_interval_sec <= 0:
@@ -327,7 +333,6 @@ class AlarmManager:
                         "alarm_manager.repeat",
                         alarm_id=alarm.alarm_id,
                         repeat=alarm.repeat_count,
-                        elapsed_sec=round(elapsed),
                     )
                     self._announce(alarm)
                     self._notify()

@@ -43,7 +43,11 @@ _start_time = time.time()
 async def _run() -> None:
     from alarms.handlers.alexa import AlexaHandler
     from alarms.handlers.display import DisplayHandler
+    from alarms.handlers.dispatcher import ChannelDispatcher
+    from alarms.handlers.push import CommandPanelHandler, PushHandler
+    from alarms.handlers.rotating_screen import RotatingScreenHandler
     from alarms.manager import AlarmManager
+    from alarms.models import NotificationChannel
     from alarms.mqtt_client import MQTTClient
     from alarms.store import AlarmStore
     from alarms.api.server import app, init as init_api
@@ -51,22 +55,39 @@ async def _run() -> None:
     # ── Storage ─────────────────────────────────────────────────────────
     store = AlarmStore(settings.alarm_db_path)
 
-    # ── MQTT client (start before manager so publish fn is ready) ───────
-    mqtt = MQTTClient(on_message=lambda topic, payload: manager.on_mqtt_message(topic, payload))
+    # ── MQTT client ──────────────────────────────────────────────────────
+    # manager is referenced by closure — defined after dispatcher
+    mqtt: MQTTClient | None = None  # forward ref; set below
+
+    def _route(topic: str, payload: dict) -> None:
+        if manager:
+            manager.on_mqtt_message(topic, payload)
+
+    mqtt = MQTTClient(on_message=_route)
 
     # ── Handlers ─────────────────────────────────────────────────────────
-    alexa = AlexaHandler(mqtt_publish_fn=mqtt.publish)
+    alexa   = AlexaHandler(mqtt_publish_fn=mqtt.publish)
     display = DisplayHandler(mqtt_publish_fn=mqtt.publish)
+    rotating = RotatingScreenHandler(mqtt_publish_fn=mqtt.publish)
+    push    = PushHandler(mqtt_publish_fn=mqtt.publish)
+    panel   = CommandPanelHandler(mqtt_publish_fn=mqtt.publish)
+
+    # ── Channel Dispatcher ────────────────────────────────────────────────
+    dispatcher = ChannelDispatcher()
+    dispatcher.register(NotificationChannel.ALEXA,           alexa)
+    dispatcher.register(NotificationChannel.DISPLAY_BANNER,  display)
+    dispatcher.register(NotificationChannel.ROTATING_SCREEN, rotating)
+    dispatcher.register(NotificationChannel.PUSH,            push)
+    dispatcher.register(NotificationChannel.COMMAND_PANEL,   panel)
 
     # ── Manager ──────────────────────────────────────────────────────────
     manager = AlarmManager(
         config_path=settings.alarms_config_path,
         store=store,
-        alexa_handler=alexa,
-        display_handler=display,
+        dispatcher=dispatcher,
     )
 
-    # Register display state broadcaster as a listener
+    # Broadcast full state on every change
     manager.add_listener(lambda alarms: display.broadcast_state(alarms))
 
     # ── API ───────────────────────────────────────────────────────────────
@@ -83,7 +104,7 @@ async def _run() -> None:
         config=str(settings.alarms_config_path),
     )
 
-    # ── Start FastAPI in a background thread ──────────────────────────────
+    # ── FastAPI in background thread ──────────────────────────────────────
     api_config = uvicorn.Config(
         app,
         host=settings.alarm_api_host,

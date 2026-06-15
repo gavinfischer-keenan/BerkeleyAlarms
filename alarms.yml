@@ -1,45 +1,144 @@
 # Berkeley Alarm Definitions
 # ──────────────────────────────────────────────────────────────────────────────
 # Each top-level key is an alarm type. The alarm service subscribes to
-# trigger_topic (supports MQTT wildcards) and manages the full alarm lifecycle:
-# trigger → announce → repeat → ack/resolve.
+# trigger_topic and manages the full alarm lifecycle.
 #
 # Fields:
 #   name               Human-readable alarm name shown in the UI.
 #   trigger_topic      MQTT topic pattern (# and + wildcards supported).
 #   severity           critical | warning | info  (controls UI colour / urgency)
-#   tts_template       Text published to home/commands/alexa-say.
+#   priority           time_critical | high | normal | low
+#                        time_critical → act right now (EQ, fire, CO, leak)
+#                        high          → act soon (breaker, CO2)
+#                        normal        → standard alert
+#                        low           → informational / AI insight
+#   tts_template       Text for Alexa announcement.
 #                      Use {location} to interpolate location_field from payload.
-#   repeat_interval_sec  Seconds between repeated Alexa announcements while ACTIVE.
-#                        Set to 0 to disable repeating.
-#   location_field     Dotted path into the MQTT payload dict to extract location,
-#                      e.g. "data.location" → payload["data"]["location"].
+#   repeat_interval_sec  Seconds between Alexa repeat announcements while ACTIVE.
+#                        0 = announce once only.
+#   location_field     Dotted path into the MQTT payload dict to extract location.
+#   channels           List of notification channels to use:
+#                        alexa           → Alexa voice (home/commands/alexa-say)
+#                        display_banner  → Full-screen TV alert (home/commands/display)
+#                        rotating_screen → Soft card on info display (home/commands/rotating-display)
+#                        push            → Mobile push notification (home/commands/push)  [future]
+#                        command_panel   → Touch command panel (home/commands/panel)       [future]
 #   auto_resolve:
-#     topic            If set, resolves when a message arrives on this topic.
-#     timeout_sec      If set, auto-resolves after this many seconds.
-#     sensor_clear     If true, resolves when payload contains wet:false / occupied:false.
+#     topic            Resolves when a message arrives on this topic.
+#     timeout_sec      Resolves after this many seconds.
+#     sensor_clear     Resolves when payload contains active/wet: false (after user Ack).
 # ──────────────────────────────────────────────────────────────────────────────
 
 alarms:
+
+  # ── LIFE SAFETY — TIME CRITICAL ────────────────────────────────────────────
 
   earthquake:
     name: "Earthquake Warning"
     trigger_topic: "home/alerts/earthquake"
     severity: "critical"
+    priority: "time_critical"
     tts_template: "Alexa Announce Earthquake Imminent"
     repeat_interval_sec: 8
+    channels: [alexa, display_banner]
     auto_resolve:
-      topic: "home/events/earthquake"    # confirmed event = shaking arrived, stop warning
-      timeout_sec: 300                   # 5 min failsafe if event topic never fires
+      topic: "home/events/earthquake"   # confirmed hit → stop warning
+      timeout_sec: 300                  # 5 min failsafe
+
+  smoke:
+    name: "Smoke Detected"
+    trigger_topic: "home/alerts/smoke/#"    # catches home/alerts/smoke/{sensor_id}
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Smoke Detected in {location}"
+    repeat_interval_sec: 20               # every 20 s — aggressive, this is a fire
+    location_field: "data.location"
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 1800                  # 30 min failsafe if sensor never clears
+
+  carbon_monoxide:
+    name: "Carbon Monoxide Alert"
+    trigger_topic: "home/alerts/co/#"     # catches home/alerts/co/{sensor_id}
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Carbon Monoxide Detected in {location}. Leave the building immediately."
+    repeat_interval_sec: 15              # very aggressive — CO is lethal silently
+    location_field: "data.location"
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600                  # 1 hr failsafe (CO lingers)
 
   leak:
     name: "Leak Detected"
     trigger_topic: "home/alerts/leak/#"  # catches home/alerts/leak/{sensor_id}
     severity: "critical"
+    priority: "time_critical"
     tts_template: "Alexa Announce Leak Detected in {location}"
-    repeat_interval_sec: 180             # repeat every 3 minutes
+    repeat_interval_sec: 180             # every 3 minutes
     location_field: "data.location"
+    channels: [alexa, display_banner]
     auto_resolve:
-      sensor_clear: true                 # resolves when sensor reports wet: false
-      # Note: also requires manual Ack before auto-resolve takes effect,
-      # so a still-wet sensor can't be silently cleared without user seeing it.
+      sensor_clear: true
+      # Note: only auto-resolves after user Ack — a still-wet sensor won't auto-clear.
+
+  # ── HIGH PRIORITY — ACT SOON ────────────────────────────────────────────────
+
+  co2_high:
+    name: "CO2 Level High"
+    trigger_topic: "home/alerts/co2/#"   # catches home/alerts/co2/{sensor_id}
+    severity: "warning"
+    priority: "high"
+    tts_template: "Alexa Announce High CO2 detected in {location}. Please ventilate the area."
+    repeat_interval_sec: 120             # every 2 minutes — dangerous but not instantly lethal
+    location_field: "data.location"
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 1800
+
+  breaker_trip:
+    name: "Circuit Breaker Tripped"
+    trigger_topic: "home/alerts/breaker/#"  # home/alerts/breaker/{circuit_id}
+    severity: "warning"
+    priority: "high"
+    tts_template: "Alexa Announce {location} breaker has been tripped"
+    repeat_interval_sec: 300               # every 5 minutes — reminder until resolved
+    location_field: "data.circuit_name"   # resolves to the human-readable circuit label
+    channels: [alexa, display_banner]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
+
+  # ── NORMAL PRIORITY ─────────────────────────────────────────────────────────
+
+  power_anomaly:
+    name: "Power Anomaly"
+    trigger_topic: "home/alerts/power/#"  # overcurrent, voltage spike/sag from power sensors
+    severity: "warning"
+    priority: "normal"
+    tts_template: "Alexa Announce Power anomaly on {location}"
+    repeat_interval_sec: 0               # announce once only — not urgent enough to repeat
+    location_field: "data.circuit_name"
+    channels: [display_banner, rotating_screen]
+    auto_resolve:
+      timeout_sec: 600
+
+  # ── LOW PRIORITY — INFORMATIONAL ─────────────────────────────────────────────
+  # AI-insight alarms route only to rotating screen and future command panel.
+  # No Alexa, no banner. Template below shows the pattern to follow.
+  #
+  # irrigation_insight:
+  #   name: "Irrigation Insight"
+  #   trigger_topic: "home/alerts/insight/irrigation"
+  #   severity: "info"
+  #   priority: "low"
+  #   tts_template: "{location}"          # unused — alexa not in channels
+  #   repeat_interval_sec: 0
+  #   channels: [rotating_screen]
+  #   auto_resolve:
+  #     timeout_sec: 86400
+
+
