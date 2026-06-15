@@ -126,6 +126,53 @@ alarms:
     auto_resolve:
       timeout_sec: 600
 
+  fire_weather:
+    name: "Critical Fire Weather"
+    trigger_topic: "home/alerts/fire-weather/+"  # home/alerts/fire-weather/{sensor_id}
+    severity: "critical"
+    priority: "time_critical"
+    tts_template: "Alexa Announce Critical Fire Weather Conditions. Pre-hydration initiated."
+    repeat_interval_sec: 300             # every 5 minutes while conditions persist
+    channels: [alexa, display_banner, rotating_screen]
+    auto_resolve:
+      timeout_sec: 7200                  # 2 hours — conditions must change significantly
+
+  air_quality:
+    name: "Air Quality Warning"
+    trigger_topic: "home/alerts/air-quality/+"   # home/alerts/air-quality/{sensor_id}
+    severity: "warning"
+    priority: "high"
+    tts_template: "Alexa Announce Poor air quality detected. Check windows and ventilation."
+    repeat_interval_sec: 600             # every 10 minutes
+    channels: [display_banner, rotating_screen]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
+
+  soil_saturation:
+    name: "Soil Over-Saturation"
+    trigger_topic: "home/alerts/soil-saturation/+"  # home/alerts/soil-saturation/{sensor_id}
+    severity: "info"
+    priority: "normal"
+    tts_template: "Alexa Announce Soil saturation alert in garden zone {location}"
+    repeat_interval_sec: 0               # once only — not urgent
+    location_field: "data.zone"
+    channels: [rotating_screen]
+    auto_resolve:
+      sensor_clear: true
+      timeout_sec: 3600
+
+  heavy_rain:
+    name: "Heavy Rain Event"
+    trigger_topic: "home/alerts/heavy-rain/+"    # home/alerts/heavy-rain/{sensor_id}
+    severity: "info"
+    priority: "normal"
+    tts_template: "Alexa Announce Heavy rain detected at the weather station."
+    repeat_interval_sec: 0
+    channels: [rotating_screen]
+    auto_resolve:
+      timeout_sec: 1800
+
   # ── LOW PRIORITY — INFORMATIONAL ─────────────────────────────────────────────
   # AI-insight alarms route only to rotating screen and future command panel.
   # No Alexa, no banner. Template below shows the pattern to follow.
