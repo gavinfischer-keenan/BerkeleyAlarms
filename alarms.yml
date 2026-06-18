@@ -38,7 +38,9 @@ alarms:
   earthquake:
     name: "Earthquake Warning"
     trigger_topic: "home/alerts/earthquake"
-    severity: "critical"
+    severity: "critical"                   # default fallback if payload has no severity
+    severity_from_payload: "severity"      # NEW: read severity from the incoming alert
+    tts_from_payload: "tts_message"        # NEW: use dynamic TTS from engine
     priority: "time_critical"
     tts_template: "Alexa Announce Earthquake Imminent"
     repeat_interval_sec: 8

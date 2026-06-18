@@ -23,6 +23,7 @@ import structlog
 import yaml
 
 from alarms.models import (
+    SEVERITY_IGNORE,
     ActiveAlarm,
     AlarmDefinition,
     AlarmPriority,
@@ -117,6 +118,8 @@ class AlarmManager:
                 channels=channels,
                 location_field=cfg.get("location_field"),
                 auto_resolve=ar,
+                severity_from_payload=cfg.get("severity_from_payload"),
+                tts_from_payload=cfg.get("tts_from_payload"),
             )
         log.info("alarm_manager.config_loaded", definitions=list(self._definitions))
 
@@ -155,6 +158,20 @@ class AlarmManager:
             log.warning("alarm_manager.unknown_definition", key=definition_key)
             return
 
+        # ── Dynamic severity from payload ────────────────────────────────
+        effective_severity = defn.severity
+        if defn.severity_from_payload:
+            payload_sev = _deep_get(payload, defn.severity_from_payload)
+            if payload_sev:
+                # Handle 'ignore' — suppress alarm entirely
+                if payload_sev.lower() == SEVERITY_IGNORE:
+                    log.info("alarm_manager.ignored_by_payload", key=definition_key, severity=payload_sev)
+                    return
+                try:
+                    effective_severity = AlarmSeverity(payload_sev.lower())
+                except ValueError:
+                    log.warning("alarm_manager.unknown_payload_severity", severity=payload_sev, key=definition_key)
+
         # Extract location from payload
         location = ""
         if defn.location_field:
@@ -165,6 +182,31 @@ class AlarmManager:
         if "{location}" in tts_text:
             tts_text = tts_text.replace("{location}", location or "unknown location")
 
+        # Dynamic TTS from payload
+        if defn.tts_from_payload:
+            payload_tts = _deep_get(payload, defn.tts_from_payload)
+            if payload_tts:
+                tts_text = f"Alexa Announce {payload_tts}"
+
+        # Severity-aware repeat interval override
+        effective_repeat = defn.repeat_interval_sec
+        if defn.severity_from_payload:  # only for payload-driven severity
+            if effective_severity == AlarmSeverity.CRITICAL:
+                effective_repeat = defn.repeat_interval_sec  # keep YAML value (8s for EQ)
+            elif effective_severity == AlarmSeverity.WARNING:
+                effective_repeat = max(defn.repeat_interval_sec, 30)  # at least 30s
+            elif effective_severity == AlarmSeverity.ADVISORY:
+                effective_repeat = 0  # announce once
+            elif effective_severity == AlarmSeverity.INFO:
+                effective_repeat = 0  # announce once, no Alexa
+
+        # INFO severity: display only, no voice
+        effective_channels = list(defn.channels)
+        if effective_severity == AlarmSeverity.INFO:
+            effective_channels = [c for c in effective_channels if c != NotificationChannel.ALEXA]
+        if effective_severity == AlarmSeverity.ADVISORY:
+            effective_channels = [c for c in effective_channels if c != NotificationChannel.ALEXA]
+
         # Deduplication: one active alarm per definition key
         existing_id = self._active_by_key.get(definition_key)
         if existing_id and existing_id in self._active:
@@ -173,6 +215,9 @@ class AlarmManager:
                 existing.payload = payload
                 existing.location = location
                 existing.tts_text = tts_text
+                existing.severity = effective_severity
+                existing.channels = effective_channels
+                existing.repeat_interval_sec = effective_repeat
                 if existing.state == AlarmState.ACTIVE:
                     log.info("alarm_manager.retriggered", key=definition_key)
                     self._announce(existing)
@@ -183,16 +228,17 @@ class AlarmManager:
             alarm_id=ActiveAlarm.make_id(),
             definition_key=definition_key,
             state=AlarmState.ACTIVE,
-            severity=defn.severity,
+            severity=effective_severity,
             priority=defn.priority,
             name=defn.name,
             tts_text=tts_text,
-            channels=list(defn.channels),
+            channels=effective_channels,
             triggered_at=ActiveAlarm.now(),
             last_announced_at=None,
             repeat_count=0,
             payload=payload,
             source_topic=source_topic,
+            repeat_interval_sec=effective_repeat,
             location=location,
         )
         self._active[alarm.alarm_id] = alarm
@@ -202,10 +248,10 @@ class AlarmManager:
             "alarm_manager.triggered",
             alarm_id=alarm.alarm_id,
             key=definition_key,
-            severity=defn.severity.value,
+            severity=effective_severity.value,
             priority=defn.priority.value,
             location=location,
-            channels=[c.value for c in defn.channels],
+            channels=[c.value for c in effective_channels],
         )
 
         # Fire first announcement immediately
@@ -323,12 +369,12 @@ class AlarmManager:
                 # ── repeat announcement (ACTIVE only) ───────────────────
                 if alarm.state != AlarmState.ACTIVE:
                     continue
-                if defn.repeat_interval_sec <= 0:
+                if alarm.repeat_interval_sec <= 0:
                     continue
 
                 last = alarm.last_announced_at or alarm.triggered_at
                 elapsed = (now - last).total_seconds()
-                if elapsed >= defn.repeat_interval_sec:
+                if elapsed >= alarm.repeat_interval_sec:
                     log.debug(
                         "alarm_manager.repeat",
                         alarm_id=alarm.alarm_id,

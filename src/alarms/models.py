@@ -17,7 +17,11 @@ class AlarmState(str, Enum):
 class AlarmSeverity(str, Enum):
     CRITICAL = "critical"
     WARNING = "warning"
+    ADVISORY = "advisory"   # significant but not immediately dangerous
     INFO = "info"
+
+
+SEVERITY_IGNORE = "ignore"  # Alarm is suppressed entirely — never creates an ActiveAlarm
 
 
 class AlarmPriority(str, Enum):
@@ -74,6 +78,8 @@ class AlarmDefinition:
     channels: list[NotificationChannel]   # ordered list of output channels to use
     location_field: str | None = None    # dotted path into payload, e.g. "data.location"
     auto_resolve: AutoResolveConfig = field(default_factory=AutoResolveConfig)
+    severity_from_payload: str | None = None  # dotted path to severity in payload (e.g. "severity")
+    tts_from_payload: str | None = None       # dotted path to dynamic TTS text in payload
 
 
 # ── Active alarm instance ──────────────────────────────────────────────────
@@ -93,6 +99,7 @@ class ActiveAlarm:
     repeat_count: int
     payload: dict[str, Any]           # original MQTT payload
     source_topic: str                 # the exact topic that triggered this alarm
+    repeat_interval_sec: int = 0      # severity-adjusted repeat interval
     location: str = ""
     acked_at: datetime | None = None
     resolved_at: datetime | None = None

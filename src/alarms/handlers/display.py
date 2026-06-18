@@ -32,6 +32,7 @@ class DisplayHandler:
         severity_map = {
             "critical": "CRITICAL",
             "warning": "WARNING",
+            "advisory": "ADVISORY",
             "info": "INFO",
         }
         payload = {
